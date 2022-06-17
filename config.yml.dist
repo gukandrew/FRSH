@@ -1,16 +1,3 @@
-# FRSH - File (R)Sync ssH
-
-Sync utility that supports sync (or compress and copy using TAR) over SSH/RSync from/to remote origin.
-
-Install dependencies & build:
-```sh
-go mod init main
-go mod vendor
-go build .
-```
-
-Set up config.yml file using template:
-```yml
 verbose: false
 
 servers:
@@ -70,10 +57,3 @@ sync:
     dry_run: true
     exclude:
       - '*.part'
-```
-
-And run to execute sync:
-
-```sh
-./main
-```
