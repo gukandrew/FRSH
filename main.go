@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/schollz/progressbar/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,32 +21,32 @@ type Config struct {
 	Verbose bool `yaml:"verbose"`
 
 	Servers map[string]struct {
-		User string `yaml:"user"`
-		Host string `yaml:"host"`
+		User       string `yaml:"user"`
+		Host       string `yaml:"host"`
 		PrivateKey string `yaml:"private_key"`
-		Port    string `yaml:"port"`
+		Port       string `yaml:"port"`
 	} `yaml:"servers"`
 
 	CompressAndCopy []struct {
-		Server string `yaml:"server"`
+		Server   string `yaml:"server"`
 		Filename string `yaml:"filename"`
-		Log string `yaml:"log"`
-		Source string `yaml:"source"`
-		Dest string `yaml:"dest"`
-		Verbose bool `yaml:"verbose"`
-		DryRun bool `yaml:"dry_run"`
-		Exclude []string
+		Log      string `yaml:"log"`
+		Source   string `yaml:"source"`
+		Dest     string `yaml:"dest"`
+		Verbose  bool   `yaml:"verbose"`
+		DryRun   bool   `yaml:"dry_run"`
+		Exclude  []string
 	} `yaml:"compress_and_copy"`
 
 	Sync []struct {
-		Server string `yaml:"server"`
-		Log string `yaml:"log"`
-		Source string `yaml:"source"`
-		Dest string `yaml:"dest"`
-		DeleteExtraneousFromDest bool `yaml:"delete_extraneous_from_dest"`
-		Verbose bool `yaml:"verbose"`
-		DryRun bool `yaml:"dry_run"`
-		Exclude []string
+		Server                   string `yaml:"server"`
+		Log                      string `yaml:"log"`
+		Source                   string `yaml:"source"`
+		Dest                     string `yaml:"dest"`
+		DeleteExtraneousFromDest bool   `yaml:"delete_extraneous_from_dest"`
+		Verbose                  bool   `yaml:"verbose"`
+		DryRun                   bool   `yaml:"dry_run"`
+		Exclude                  []string
 	} `yaml:"sync"`
 }
 
@@ -86,7 +88,7 @@ func compressAndCopyDirectories(cfg *Config) {
 		fromRemote := remoteMarker.FindString(v.Source) != ""
 		source := remoteMarker.ReplaceAllString(v.Source, "")
 		dest := remoteMarker.ReplaceAllString(v.Dest, "")
-		filename :=  v.Filename + "_" + timestamp + ".tar.gz"
+		filename := v.Filename + "_" + timestamp + ".tar.gz"
 
 		if fromRemote {
 			if v.Log != "" {
@@ -104,7 +106,7 @@ func compressAndCopyDirectories(cfg *Config) {
 			tarArgs := []string{excludes, "-zcvf", filename, source}
 			tarArgsStr := strings.Join(append([]string{"tar"}, tarArgs...), " ")
 
-			args := []string{ "-i", privateKey, "-p", port, connectStr, tarArgsStr}
+			args := []string{"-i", privateKey, "-p", port, connectStr, tarArgsStr}
 
 			fmt.Printf(">> [%v] RUN: %v\n", idx, strings.Join(append([]string{"ssh"}, args...), " "))
 
@@ -122,7 +124,7 @@ func compressAndCopyDirectories(cfg *Config) {
 
 			// Downloading using SCP
 			source = fmt.Sprintf("%v:%v", connectStr, filename)
-			args = []string{ "-i", privateKey, "-P", port, source, dest }
+			args = []string{"-i", privateKey, "-P", port, source, dest}
 
 			fmt.Printf(">> [%v] RUN: %v\n", idx, strings.Join(append([]string{"scp"}, args...), " "))
 
@@ -171,7 +173,7 @@ func compressAndCopyDirectories(cfg *Config) {
 			// Downloading using SCP
 
 			dest = fmt.Sprintf("%v:%v", connectStr, dest)
-			args = []string{ "-i", privateKey, "-P", port, filename, dest }
+			args = []string{"-i", privateKey, "-P", port, filename, dest}
 
 			fmt.Printf(">> [%v] RUN: %v\n", idx, strings.Join(append([]string{"scp"}, args...), " "))
 
@@ -194,6 +196,37 @@ func compressAndCopyDirectories(cfg *Config) {
 	}
 }
 
+type progressWriter struct {
+	total       *int
+	progressBar *progressbar.ProgressBar
+}
+
+func (e progressWriter) Write(p []byte) (int, error) {
+	matcher := regexp.MustCompile(`(?:^|\n)(\d+)###(.*)`)
+	kk := matcher.FindAllSubmatch(p, -1)
+
+	currentTotal := 0
+	for i := 0; i < len(kk); i++ {
+		if len(kk[i]) < 2 {
+			continue
+		}
+
+		val, _ := strconv.Atoi(string(kk[i][1]))
+		currentTotal += val
+	}
+
+	if e.progressBar != nil {
+		e.progressBar.Add(currentTotal)
+
+		if *e.total < 1 {
+			e.progressBar.RenderBlank()
+		}
+	}
+	*e.total += currentTotal
+
+	return len(p), nil
+}
+
 func copyDirectories(cfg *Config) {
 	if len(cfg.Sync) <= 0 {
 		return
@@ -201,117 +234,158 @@ func copyDirectories(cfg *Config) {
 
 	remoteMarker := regexp.MustCompile(`^remote:`)
 
-	for index, v := range cfg.Sync {
-		fromRemote := remoteMarker.FindString(v.Source) != ""
-		source := remoteMarker.ReplaceAllString(v.Source, "")
-		dest := remoteMarker.ReplaceAllString(v.Dest, "")
+	for index, syncItem := range cfg.Sync {
+		fromRemote := remoteMarker.FindString(syncItem.Source) != ""
+		source := remoteMarker.ReplaceAllString(syncItem.Source, "")
+		dest := remoteMarker.ReplaceAllString(syncItem.Dest, "")
 
-		server := cfg.Servers[v.Server]
+		server := cfg.Servers[syncItem.Server]
 		connectStr := fmt.Sprintf("%v@%v", server.User, server.Host)
 		idx := index + 1
 
 		if fromRemote {
 			source = fmt.Sprintf("%v:%v", connectStr, source)
 
-			if v.Log != "" {
-				fmt.Printf(">> [%v] %v:\n", idx, v.Log)
+			if syncItem.Log != "" {
+				fmt.Printf(">> [%v] %v:\n", idx, syncItem.Log)
 			} else {
 				fmt.Printf(">> [%v] Copying %v into %v:\n", idx, source, dest)
 			}
 
-			excludes := parseExcludes(v.Exclude)
-			port := cfg.Servers[v.Server].Port
-			privateKey := cfg.Servers[v.Server].PrivateKey
+			excludes := parseExcludes(syncItem.Exclude)
+			port := cfg.Servers[syncItem.Server].Port
+			privateKey := cfg.Servers[syncItem.Server].PrivateKey
 			sshArgs := "\"" + strings.Join([]string{"ssh", "-i", privateKey, "-p", port}, " ") + "\""
 
-			args := []string{"-avz", "--progress"}
+			args := []string{"-avz", "--progress", "--out-format=%l###%n"}
 
-			if v.DryRun {
+			if syncItem.DryRun {
 				args = append(args, "--dry-run")
 			}
 
-			if cfg.Verbose || v.Verbose {
-				args = append(args, "--stats")
-			}
+			// if cfg.Verbose || v.Verbose {
+			// 	args = append(args, "--stats")
+			// }
 
-			if v.DeleteExtraneousFromDest {
+			if syncItem.DeleteExtraneousFromDest {
 				args = append(args, "--delete")
 			}
 
-			args = append(args, excludes, source, dest)
+			if excludes != "" {
+				args = append(args, excludes)
+			}
+
+			args = append(args, source, dest)
 
 			fmt.Printf(">> [%v] RUN: %v\n", idx, strings.Join(append([]string{"rsync"}, args...), " "))
-
-			cmd := exec.Command("rsync", args...)
-
-			// rsync-ssh crutch: no other way to use ssh for rsync here in golang :(
-			cmd.Env = os.Environ()
-			cmd.Env = append(cmd.Env, "RSYNC_RSH=\""+sshArgs+"\"")
-			// end rsync-ssh crutch
-
-			var outb, errb bytes.Buffer
-			cmd.Stdout = &outb
-			cmd.Stderr = &errb
-			cmd.Run()
-
-			if cfg.Verbose || v.Verbose {
-				fmt.Println(outb.String())
-				fmt.Println(errb.String())
-			}
+			RsyncWithProgress(idx, args, sshArgs, cfg, syncItem)
 		} else {
 			dest = fmt.Sprintf("%v:%v", connectStr, dest)
 
 			idx := index + 1
-			if v.Log != "" {
-				fmt.Printf(">> [%v] %v:\n", idx, v.Log)
+			if syncItem.Log != "" {
+				fmt.Printf(">> [%v] %v:\n", idx, syncItem.Log)
 			} else {
 				fmt.Printf(">> [%v] Copying %v into %v:\n", idx, source, dest)
 			}
 
-			excludes := parseExcludes(v.Exclude)
-			port := cfg.Servers[v.Server].Port
-			privateKey := cfg.Servers[v.Server].PrivateKey
+			excludes := parseExcludes(syncItem.Exclude)
+			port := cfg.Servers[syncItem.Server].Port
+			privateKey := cfg.Servers[syncItem.Server].PrivateKey
 			sshArgs := "\"" + strings.Join([]string{"ssh", "-i", privateKey, "-p", port}, " ") + "\""
 
 			args := []string{"-avz", "--progress"}
 
-			if v.DryRun {
+			if syncItem.DryRun {
 				args = append(args, "--dry-run")
 			}
 
-			if cfg.Verbose || v.Verbose {
+			if cfg.Verbose || syncItem.Verbose {
 				args = append(args, "--stats")
 			}
 
-			if v.DeleteExtraneousFromDest {
+			if syncItem.DeleteExtraneousFromDest {
 				args = append(args, "--delete")
 			}
 
 			args = append(args, excludes, source, dest)
 
 			fmt.Printf(">> [%v] RUN: %v\n", idx, strings.Join(append([]string{"rsync"}, args...), " "))
-
-			cmd := exec.Command("rsync", args...)
-
-			// rsync-ssh crutch: no other way to use ssh for rsync here in golang :(
-			cmd.Env = os.Environ()
-			cmd.Env = append(cmd.Env, "RSYNC_RSH=\""+sshArgs+"\"")
-			// end rsync-ssh crutch
-
-			var outb, errb bytes.Buffer
-			cmd.Stdout = &outb
-			cmd.Stderr = &errb
-			cmd.Run()
-
-			if cfg.Verbose || v.Verbose {
-				fmt.Println(outb.String())
-				fmt.Println(errb.String())
-			}
-
+			RsyncWithProgress(idx, args, sshArgs, cfg, syncItem)
 		}
 
 		fmt.Printf(">> [%v] DONE! \n", idx)
 	}
+}
+
+func RsyncWithProgress(idx int, args []string, sshArgs string, cfg *Config, v struct {
+	Server                   string "yaml:\"server\""
+	Log                      string "yaml:\"log\""
+	Source                   string "yaml:\"source\""
+	Dest                     string "yaml:\"dest\""
+	DeleteExtraneousFromDest bool   "yaml:\"delete_extraneous_from_dest\""
+	Verbose                  bool   "yaml:\"verbose\""
+	DryRun                   bool   "yaml:\"dry_run\""
+	Exclude                  []string
+}) {
+	cmd := exec.Command("rsync", args...)
+
+	// rsync-ssh crutch: no other way to use ssh for rsync here in golang :(
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, "RSYNC_RSH=\""+sshArgs+"\"")
+	// end rsync-ssh crutch
+
+	total := executeRsyncPrediction(args, sshArgs)
+	bar := createProgressbar(total, "syncing")
+
+	dumbTotal := 0
+	cmdWriter := &progressWriter{total: &dumbTotal, progressBar: bar}
+	mw := io.MultiWriter(cmdWriter)
+	if cfg.Verbose || v.Verbose {
+		mw = io.MultiWriter(cmdWriter, os.Stdout)
+	}
+
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+
+	cmd.Run()
+	bar.Finish()
+}
+
+func createProgressbar(total int, description string) *progressbar.ProgressBar {
+	bar := progressbar.NewOptions64(
+		int64(total),
+		progressbar.OptionSetDescription(description),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionSetWidth(10),
+		progressbar.OptionThrottle(65*time.Millisecond),
+		progressbar.OptionShowCount(),
+		progressbar.OptionOnCompletion(func() {
+			fmt.Printf("\n")
+		}),
+		progressbar.OptionSpinnerType(14),
+		progressbar.OptionFullWidth(),
+		progressbar.OptionSetPredictTime(false),
+	)
+	bar.RenderBlank()
+	return bar
+}
+
+func executeRsyncPrediction(args []string, sshArgs string) int {
+	prediction := exec.Command("rsync", append([]string{"--dry-run"}, args...)...)
+	prediction.Env = os.Environ()
+	prediction.Env = append(prediction.Env, "RSYNC_RSH=\""+sshArgs+"\"")
+
+	total := 0
+	prediction.Stdout = &progressWriter{total: &total, progressBar: nil}
+	prediction.Run()
+
+	if total == 0 {
+		total = 100
+	}
+
+	return total
 }
 
 func parseExcludes(v []string) string {
