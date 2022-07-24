@@ -16,32 +16,34 @@ type Server struct {
 	Port       string `yaml:"port"`
 }
 
-type Config struct {
-	Verbose bool `yaml:"verbose"`
+type SyncItem struct {
+	Server                   string `yaml:"server"`
+	Log                      string `yaml:"log"`
+	Source                   string `yaml:"source"`
+	Dest                     string `yaml:"dest"`
+	DeleteExtraneousFromDest bool   `yaml:"delete_extraneous_from_dest"`
+	Verbose                  uint   `yaml:"verbose"`
+	DryRun                   bool   `yaml:"dry_run"`
+	Exclude                  []string
+}
 
-	Servers map[string]Server `yaml:"servers"`
-
-	CompressAndCopy []struct {
+type CompressAndCopyItem struct {
 		Server   string `yaml:"server"`
 		Filename string `yaml:"filename"`
 		Log      string `yaml:"log"`
 		Source   string `yaml:"source"`
 		Dest     string `yaml:"dest"`
-		Verbose  bool   `yaml:"verbose"`
+		Verbose  uint   `yaml:"verbose"`
 		DryRun   bool   `yaml:"dry_run"`
 		Exclude  []string
-	} `yaml:"compress_and_copy"`
+	}
 
-	Sync []struct {
-		Server                   string `yaml:"server"`
-		Log                      string `yaml:"log"`
-		Source                   string `yaml:"source"`
-		Dest                     string `yaml:"dest"`
-		DeleteExtraneousFromDest bool   `yaml:"delete_extraneous_from_dest"`
-		Verbose                  bool   `yaml:"verbose"`
-		DryRun                   bool   `yaml:"dry_run"`
-		Exclude                  []string
-	} `yaml:"sync"`
+type Config struct {
+	Verbose uint `yaml:"verbose"`
+
+	Servers map[string]Server `yaml:"servers"`
+	CompressAndCopy []CompressAndCopyItem `yaml:"compress_and_copy"`
+	Sync []SyncItem `yaml:"sync"`
 }
 
 func getConfig() *Config {

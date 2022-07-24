@@ -20,12 +20,20 @@ func main() {
 	copyDirectories(cfg)
 }
 
-func sshHostAlive(server Server, verbose bool) bool {
+func maxUint(x uint, y uint) uint {
+	if x > y {
+		return x
+	}
+
+	return y
+}
+
+func sshHostAlive(idx int, server Server, verbose uint) bool {
 	connectStr := fmt.Sprintf("%v@%v", server.User, server.Host)
 
 	args := []string{"-q", "-o BatchMode=yes", "-o StrictHostKeyChecking=no", "-o ConnectTimeout=5", "-i", server.PrivateKey, "-p", server.Port, connectStr, "exit 0"}
 
-	cmd := ExecAndLog("ssh", "", args, verbose, false, 0)
+	cmd := ExecAndLog(verbose, "ssh", "", args, false, idx)
 	code := cmd.ProcessState.ExitCode()
 
 	return code == 0
@@ -40,12 +48,12 @@ func compressAndCopyDirectories(cfg *Config) {
 	remoteMarker := regexp.MustCompile(`^remote:`)
 
 	for index, syncItem := range cfg.CompressAndCopy {
-		verbose := cfg.Verbose || syncItem.Verbose
+		verbose := maxUint(cfg.Verbose, syncItem.Verbose)
 		idx := index + 1
 
 		server := cfg.Servers[syncItem.Server]
 
-		if !sshHostAlive(server, verbose) {
+		if !sshHostAlive(idx, server, verbose) {
 			fmt.Printf("[%v] Host '%v' is unreachable! \n", idx, syncItem.Server)
 			continue
 		}
@@ -67,14 +75,14 @@ func compressAndCopyDirectories(cfg *Config) {
 			args = []string{"-i", privateKey, "-p", port, connectStr, tarArgsStr}
 
 			fmt.Printf("[Tar and Copy %v] Compressing remote directory '%v'. This could take long time depending on size! \n", idx, source)
-			ExecAndLog("ssh", "Tar and Copy", args, verbose, syncItem.DryRun, idx)
+			ExecAndLog(verbose, "ssh", "Tar and Copy", args, syncItem.DryRun, idx)
 
 			source = fmt.Sprintf("%v:%v", connectStr, filename)
 		} else {
 			args = []string{excludes, "-zcvf", filename, source}
 
 			fmt.Printf("[Tar and Copy %v] Compressing local directory '%v'. This could take long time depending on size! \n", idx, source)
-			ExecAndLog("tar", "Tar and Copy", args, verbose, syncItem.DryRun, idx)
+			ExecAndLog(verbose, "tar", "Tar and Copy", args, syncItem.DryRun, idx)
 
 			source = filename
 			dest = fmt.Sprintf("%v:%v", connectStr, dest)
@@ -83,24 +91,15 @@ func compressAndCopyDirectories(cfg *Config) {
 		args = []string{"-i", privateKey, "-P", port, source, dest}
 
 		LogAction("scp", "Tar and Copy", syncItem.Log, args, idx, source, dest)
-		ExecAndLog("scp", "Tar and Copy", args, true, syncItem.DryRun, idx)
+		ExecAndLog(1, "scp", "Tar and Copy", args, syncItem.DryRun, idx)
 	}
 }
 
-func generateArchiveName(v struct {
-	Server   string "yaml:\"server\""
-	Filename string "yaml:\"filename\""
-	Log      string "yaml:\"log\""
-	Source   string "yaml:\"source\""
-	Dest     string "yaml:\"dest\""
-	Verbose  bool   "yaml:\"verbose\""
-	DryRun   bool   "yaml:\"dry_run\""
-	Exclude  []string
-}, timestamp string) string {
+func generateArchiveName(syncItem CompressAndCopyItem, timestamp string) string {
 	filename := "/dev/null"
 
-	if !v.DryRun {
-		filename = "/tmp/" + v.Filename + "_" + timestamp + ".tar.gz"
+	if !syncItem.DryRun {
+		filename = "/tmp/" + syncItem.Filename + "_" + timestamp + ".tar.gz"
 	}
 	return filename
 }
@@ -113,12 +112,13 @@ func copyDirectories(cfg *Config) {
 	remoteMarker := regexp.MustCompile(`^remote:`)
 
 	for index, syncItem := range cfg.Sync {
-		verbose := cfg.Verbose || syncItem.Verbose
+		verbose := maxUint(cfg.Verbose, syncItem.Verbose)
+
 		idx := index + 1
 
 		server := cfg.Servers[syncItem.Server]
 
-		if !sshHostAlive(server, verbose) {
+		if !sshHostAlive(idx, server, verbose) {
 			fmt.Printf("[%v] Server '%v' Host is unreachable! \n", idx, syncItem.Server)
 			continue
 		}
@@ -129,21 +129,12 @@ func copyDirectories(cfg *Config) {
 		sshArgs, args := generateRsyncArgs(cfg, syncItem, source, dest)
 
 		LogAction("rsync", "", syncItem.Log, args, idx, source, dest)
-		ExecuteRsyncWithProgress(idx, args, sshArgs, cfg, syncItem)
-		ExecAndLog("rsync", "", args, verbose, syncItem.DryRun, idx)
+		ExecuteRsyncWithProgress(verbose, idx, args, sshArgs, cfg, syncItem)
+		ExecAndLog(verbose, "rsync", "", args, syncItem.DryRun, idx)
 	}
 }
 
-func initializeSourceDest(server Server, syncItem struct {
-	Server                   string "yaml:\"server\""
-	Log                      string "yaml:\"log\""
-	Source                   string "yaml:\"source\""
-	Dest                     string "yaml:\"dest\""
-	DeleteExtraneousFromDest bool   "yaml:\"delete_extraneous_from_dest\""
-	Verbose                  bool   "yaml:\"verbose\""
-	DryRun                   bool   "yaml:\"dry_run\""
-	Exclude                  []string
-}, fromRemote bool, source string, dest string) (string, string) {
+func initializeSourceDest(server Server, syncItem SyncItem, fromRemote bool, source string, dest string) (string, string) {
 	connectStr := fmt.Sprintf("%v@%v", server.User, server.Host)
 	if fromRemote {
 		source = fmt.Sprintf("%v:%v", connectStr, source)
@@ -165,8 +156,8 @@ func LogAction(execname string, details string, logMsg string, args []string, id
 	}
 }
 
-func ExecAndLog(execname string, details string, args []string, verbose bool, dryRun bool, idx int) *exec.Cmd {
-	if verbose {
+func ExecAndLog(verbose uint, execname string, details string, args []string, dryRun bool, idx int) *exec.Cmd {
+	if verbose == 1 {
 		if details != "" {
 			details = details + " "
 		}
@@ -177,7 +168,7 @@ func ExecAndLog(execname string, details string, args []string, verbose bool, dr
 	cmd := exec.Command(execname, args...)
 
 	if !dryRun {
-		if verbose {
+		if verbose == 2 {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stdout
 		}
@@ -195,16 +186,7 @@ func cleanupSourceDest(cfg *Config, in_source string, in_dest string, remoteMark
 	return dest, source, fromRemote
 }
 
-func ExecuteRsyncWithProgress(idx int, args []string, sshArgs string, cfg *Config, v struct {
-	Server                   string "yaml:\"server\""
-	Log                      string "yaml:\"log\""
-	Source                   string "yaml:\"source\""
-	Dest                     string "yaml:\"dest\""
-	DeleteExtraneousFromDest bool   "yaml:\"delete_extraneous_from_dest\""
-	Verbose                  bool   "yaml:\"verbose\""
-	DryRun                   bool   "yaml:\"dry_run\""
-	Exclude                  []string
-}) {
+func ExecuteRsyncWithProgress(verbose uint, idx int, args []string, sshArgs string, cfg *Config, syncItem SyncItem) {
 	cmd := exec.Command("rsync", args...)
 
 	// rsync-ssh crutch: no other way to use ssh for rsync here in golang :(
@@ -217,7 +199,7 @@ func ExecuteRsyncWithProgress(idx int, args []string, sshArgs string, cfg *Confi
 
 	cmdWriter := &progressWriter{progressBar: bar}
 	mw := io.MultiWriter(cmdWriter)
-	if cfg.Verbose || v.Verbose {
+	if verbose == 2 {
 		mw = io.MultiWriter(cmdWriter, os.Stdout)
 	}
 
@@ -228,16 +210,7 @@ func ExecuteRsyncWithProgress(idx int, args []string, sshArgs string, cfg *Confi
 	bar.Finish()
 }
 
-func generateRsyncArgs(cfg *Config, syncItem struct {
-	Server                   string "yaml:\"server\""
-	Log                      string "yaml:\"log\""
-	Source                   string "yaml:\"source\""
-	Dest                     string "yaml:\"dest\""
-	DeleteExtraneousFromDest bool   "yaml:\"delete_extraneous_from_dest\""
-	Verbose                  bool   "yaml:\"verbose\""
-	DryRun                   bool   "yaml:\"dry_run\""
-	Exclude                  []string
-}, source string, dest string) (string, []string) {
+func generateRsyncArgs(cfg *Config, syncItem SyncItem, source string, dest string) (string, []string) {
 	args := []string{"-avz", "--progress", "--out-format=%l###%n"}
 
 	if syncItem.DryRun {
