@@ -1,6 +1,6 @@
 # FRSH - File (R)Sync ssH
 
-Sync utility that supports sync (or compress and copy using TAR) over SSH/RSync from/to remote origin.
+Utility written in Golang that supports sync (or compress and copy using TAR) over SSH/RSync from/to remote origin.
 
 Install dependencies & build:
 ```sh
