@@ -53,8 +53,8 @@ sync:
   # sync from server
   - server: myserver_name_could_be_any
     log: Copying Downloads dir               # optional, custom msg to be shown before run this action
-    source: remote:~/downloads/              # pay attention to (1) 'remote:*' prefix and (2) last '/' if you want to only copy child files of 'downloads' dir
-    dest: /Users/user/downloads/             # sync them into LOCAL 'downloads' dir
+    source: remote:"~/downloads/Folder name With Spaces/"              # pay attention to (1) 'remote:*' prefix and (2) last '/' if you want to only copy child files of 'downloads' dir
+    dest: "/Users/user/downloads/Folder name With Spaces"             # sync them into LOCAL 'downloads' dir
     delete_extraneous_from_dest: false       # WARN! Removes files in dest loc, that are not exists in source location
     verbose: 0
     dry_run: true
